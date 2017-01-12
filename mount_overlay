@@ -1,0 +1,48 @@
+#!/bin/bash
+
+if [ -z "$1" ] ; then
+    echo 1>&2 "USAGE: $0 <workdir>:<lowerdir> [<workdir2>:<lowerdir>...]"
+    exit 1
+fi
+
+DIRS="$@"
+
+if [ -z "$OVERLAYFS_REMOUNT_SCRIPT" ] ; then
+    OVERLAYFS_REMOUNT_SCRIPT=~/.remount_overlays
+fi
+
+for i in $DIRS ; do
+    WORK_DIR=$(echo $i | awk -F: '{print $1}')
+    UPPER_DIR=${WORK_DIR}Upper
+    LOWER_DIR=$(echo $i | awk -F: '{print $2}')
+
+    if [ ! -d "$WORK_DIR" ] ; then
+        echo 1>&2 "Skipping missing directory: $WORK_DIR"
+        continue;
+    elif [ ! -d "$UPPER_DIR" ] ; then
+        echo 1>&2 "Skipping $WORK_DIR missing upper directory: $UPPER_DIR"
+        continue;
+    elif [ ! -d "$LOWER_DIR" ] ; then
+        echo 1>&2 "Skipping $WORK_DIR missing lower directory: $LOWER_DIR"
+        continue;
+    fi
+
+    echo "Mounting $WORK_DIR over $LOWER_DIR"
+    sudo mount -t overlayfs overlayfs -o lowerdir=${LOWER_DIR},upperdir=${UPPER_DIR},workdir=${WORK_DIR} $WORK_DIR
+    if [ $? -eq 0 ] ; then
+        echo "Changing permissions on $LOWER_DIR"
+        chmod a-w $LOWER_DIR
+        #add to the end of the list of things we need to remount
+        if [ ! -f $OVERLAYFS_REMOUNT_SCRIPT ] ; then
+            echo "#!/bin/bash" > $OVERLAYFS_REMOUNT_SCRIPT
+            chmod a+x $OVERLAYFS_REMOUNT_SCRIPT
+        fi
+        # Make sure to include the path we ran from, since the mount command may be relative to that path.
+        # Only allowed one line for the entire mount commmand, including dir change, since we have to be
+        # able to grep to remove all lines based on lower dir or work dir
+        echo "cd $(pwd) && sudo mount -t overlayfs overlayfs -o lowerdir=${LOWER_DIR},upperdir=${UPPER_DIR},workdir=${WORK_DIR} $WORK_DIR" >> $OVERLAYFS_REMOUNT_SCRIPT
+    else
+        echo 1>&2 "Unable to mount"
+        break;
+    fi
+done

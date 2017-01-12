@@ -1,0 +1,70 @@
+#!/bin/bash
+
+if [ -z "$1" ] ; then
+    echo 1>&2 "USAGE: $0 (<workdir> [<workdir2>...]) | (<lowerdir> [<lowerdir2>...])"
+    exit 1
+fi
+
+if [ -z "$OVERLAYFS_REMOUNT_SCRIPT" ] ; then
+    OVERLAYFS_REMOUNT_SCRIPT=~/.remount_overlays
+fi
+
+#provided all lower directories?
+if [[ -n $(echo $1 | grep "Lower") ]] ; then
+    for lower in "$@" ; do
+        if [ ! -d $lower ] ; then
+            echo 1>&2 "No such lowerdir: $lower"
+            continue;
+        fi
+
+        #get all lines where the lower directory is part of the lowerdir option,
+        #and take the third column (the mount point)
+        MOUNT_PTS=$(mount | grep -E "^overlayfs.*lowerdir=[^, )]*${lower}" | awk '{print $3}')
+        ERR=0
+        for pts in $MOUNT_PTS ; do
+            echo "Unmounting ${pts} over ${lower}"
+            sudo umount $pts
+            if [ $? -ne 0 ] ; then
+                ERR=$?
+                echo 1>&2 "Unable to unmount $pts from $lower"
+            fi
+        done
+        #only if everything associated with the lower has been unmounted
+        if [ $ERR -eq 0 ] ; then
+            echo "Changing permissions on $lower"
+            chmod a+w $lower
+            # Remove all entries from the remount file list that have the lower dir in it
+            grep -vE "lowerdir=[^, )]*${lower}" $OVERLAYFS_REMOUNT_SCRIPT > ${OVERLAYFS_REMOUNT_SCRIPT}.temp
+            mv ${OVERLAYFS_REMOUNT_SCRIPT}.temp $OVERLAYFS_REMOUNT_SCRIPT
+        fi
+    done
+else
+    for work in "$@" ; do
+        if [ ! -d $work ] ; then
+            echo 1>&2 "No such workdir: $work"
+            continue;
+        fi
+
+        #find the line our workdir is set on, parse out the lowerdir option, then limit it to the path portion
+        LOWER=$(mount | grep -E "^overlayfs.*workdir=[^, )]*${work}" | grep -oE "lowerdir=[^, )]*" | awk -F= '{print $2}')
+        if [[ -z $LOWER ]] ; then
+            echo "Nothing mounted for ${work}, skipping"
+            continue;
+        fi
+        echo "Unmounting $work"
+        sudo umount $work
+        #see if any other overlays use the same lowerdir
+        MOUNT_PTS=$(mount | grep -E "^overlayfs.*lowerdir=[^, )]*${LOWER}" | awk '{print $3}')
+        if [[ -z $MOUNT_PTS ]] ; then
+            echo "Everything unmounted over $LOWER, changing permissions"
+            chmod -R a+w $LOWER
+        fi
+        # Remove all entries from the remount file list that have the work dir in it
+        if [ -f $OVERLAYFS_REMOUNT_SCRIPT ] ; then
+            grep -vE "workdir=[^, )]*${work}" $OVERLAYFS_REMOUNT_SCRIPT > ${OVERLAYFS_REMOUNT_SCRIPT}.temp
+            mv ${OVERLAYFS_REMOUNT_SCRIPT}.temp $OVERLAYFS_REMOUNT_SCRIPT
+        fi
+    done
+fi
+
+
